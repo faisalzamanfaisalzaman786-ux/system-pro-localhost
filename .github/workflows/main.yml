@@ -1,38 +1,78 @@
-name: Decompile APK and Extract Sources
+name: System Pro Cloud Bridge
 
 on:
-  workflow_dispatch:
-    inputs:
-      apk_path:
-        description: 'Path to APK in repository'
-        required: true
-        default: 'apk_uploads/input.apk'
+  repository_dispatch:
+    types: [build-app]
 
 jobs:
-  decompile:
+  build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
+      - name: 1. Workspace Cleanup
         uses: actions/checkout@v4
 
-      - name: Set up Java
+      - name: 2. Java Development Kit Setup (v17)
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
           java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
 
-      - name: Install jadx
+      - name: 3. Injecting Code from System Pro App
         run: |
-          wget https://github.com/skylot/jadx/releases/download/v1.5.0/jadx-1.5.0.zip
-          unzip jadx-1.5.0.zip -d jadx
-          echo "$(pwd)/jadx/bin" >> $GITHUB_PATH
+          # پیکیج کا راستہ خودکار طور پر بنانا
+          PKG_NAME="${{ github.event.client_payload.package_name }}"
+          PKG_PATH=$(echo "$PKG_NAME" | tr '.' '/')
+          
+          mkdir -p app/src/main/java/$PKG_PATH
+          mkdir -p app/src/main/res/layout
+          mkdir -p app/src/main/res/values
 
-      - name: Extract sources with jadx
+          # ایپ سے بھیجا گیا کوڈ کلاؤڈ فائلوں میں منتقل کرنا
+          echo '${{ github.event.client_payload.java }}' > app/src/main/java/$PKG_PATH/MainActivity.java
+          echo '${{ github.event.client_payload.xml }}' > app/src/main/res/layout/activity_main.xml
+          echo '${{ github.event.client_payload.manifest }}' > app/src/main/AndroidManifest.xml
+          
+          # ضروری ریسورسز (Colors and Styles)
+          echo '<?xml version="1.0" encoding="utf-8"?><resources><color name="colorPrimary">#00FFCC</color><style name="Theme.App" parent="Theme.MaterialComponents.DayNight.NoActionBar" /></resources>' > app/src/main/res/values/colors.xml
+          echo '<?xml version="1.0" encoding="utf-8"?><resources><string name="app_name">${{ github.event.client_payload.app_name }}</string></resources>' > app/src/main/res/values/strings.xml
+
+      - name: 4. Auto-Configure Build Engine
         run: |
-          jadx -d sources "${{ github.event.inputs.apk_path }}"
+          # گریڈل فائلز کی تیاری
+          cat <<EOF > build.gradle
+          buildscript {
+              repositories { google(); mavenCentral() }
+              dependencies { classpath 'com.android.tools.build:gradle:8.1.1' }
+          }
+          allprojects { repositories { google(); mavenCentral() } }
+          EOF
+          
+          cat <<EOF > app/build.gradle
+          plugins { id 'com.android.application' }
+          android {
+              namespace "${{ github.event.client_payload.package_name }}"
+              compileSdk 34
+              defaultConfig {
+                  applicationId "${{ github.event.client_payload.package_name }}"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+          }
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'com.google.android.material:material:1.9.0'
+          }
+          EOF
 
-      - name: Upload sources artifact
+      - name: 5. Compiling & Generating APK
+        run: chmod +x gradlew && ./gradlew assembleDebug
+
+      - name: 6. Delivery of APK to Local Bridge
         uses: actions/upload-artifact@v4
         with:
-          name: app-sources
-          path: sources/
+          name: ${{ github.event.client_payload.app_name }}_Production
+          path: app/build/outputs/apk/debug/*.apk
